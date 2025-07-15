@@ -274,7 +274,7 @@ dependencies:
       - appdirs==1.4.4
       - ase==3.23.0
       - astropy==5.2.2
-      - autodocktools-py3==1.5.7.post1+10.g9d37a13
+      - git+https://github.com/Valdes-Tresanco-MS/AutoDockTools_py3
       - biopandas==0.5.1
       - configargparser==0.0.2
       - cython==3.0.10
