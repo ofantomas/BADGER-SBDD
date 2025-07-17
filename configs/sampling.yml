@@ -38,18 +38,18 @@ sample:
   classifier_type: c
   ckpt: /home/yuejian/project/targetaware/load_ckpt/escher
   seed: 2021
-  num_samples: 100
+  num_samples: 256
   num_steps: 1000 # was 1000
   pos_only: False
   center_pos_mode: protein
   sample_num_atoms: prior
-  s: 30. # [0., 1., 5., 10.]
+  s: 0. # [0., 1., 5., 10.]
   s_v: 0. # [1., 5., 10.]
-  context: -20. # [-7., -13.] mean at -10.5 for example pocket
-  norm_type: l1
-  clip: 1e10
-  condition: -10.
-  w: 0.
+  context: -16. # target \Delta{G}; [-7., -13.] mean at -10.5 for example pocket
+  clip: 3e-3
+  norm_type: l1 # for classifier free guidance
+  condition: -10. # for classifier free guidance
+  w: 0. # for classifier free guidance
 
 train:
   ckpt_dir: ./load_ckpt

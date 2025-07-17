@@ -21,6 +21,7 @@ from torch_geometric.transforms import Compose
 
 sys.path.append(os.getcwd())
 
+import utils.misc as misc
 import utils.transforms as trans
 from datasets.pl_data import ProteinLigandData, torchify_dict
 from models.classifier_cur import Classifier
@@ -65,7 +66,7 @@ def build_data(pdb_path: str, center: List[float]):
     return data
 
 
-def main(args):
+def main(args, config):
     device = torch.device(args.device)
 
     # ---------------- Load pretrained diffusion model ----------------
@@ -115,7 +116,7 @@ def main(args):
     pred_pos, pred_v, *_ = sample_diffusion_ligand(
         model,
         data,
-        args.num,
+        config.sample.num_samples,
         batch_size=args.batch,
         device=device,
         num_steps=config.sample.num_steps,
@@ -158,6 +159,9 @@ if __name__ == "__main__":
     parser.add_argument("--device", default="cuda:0", help="CUDA device or 'cpu'")
     args = parser.parse_args()
 
+    config = misc.load_config(args.config)
+    misc.seed_all(config.sample.seed)
+
     # Convert center list of str to list[float] here for type consistency
     args.center = [float(x) for x in args.center]
-    main(args)
+    main(args, config)
