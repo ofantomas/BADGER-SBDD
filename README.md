@@ -23,6 +23,19 @@ These methods enable general binding affinity-guided molecular design using diff
 
 ### 1. Environment Setup
 
+Ubuntu 24 is needed to install all the packages correctly.
+
+```bash
+conda create -n badger_env python=3.12
+conda activate badger_env
+pip3 install torch
+pip install torch_geometric
+pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.7.0+cu126.html
+conda install rdkit openbabel tensorboard pyyaml easydict python-lmdb -c conda-forge
+pip install meeko==0.1.dev3 scipy pdb2pqr vina==1.2.2 
+python -m pip install git+https://github.com/Valdes-Tresanco-MS/AutoDockTools_py3
+```
+
 Create the conda environment:
 
 ```bash
