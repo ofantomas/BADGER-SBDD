@@ -40,6 +40,8 @@ import torch
 from rdkit import Chem
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
+import shutil
+import csv
 
 sys.path.append(os.getcwd())
 
@@ -91,6 +93,7 @@ def run_evaluation(
     box_size: List[float],
     result_path: str,
     exhaustiveness: int = 8,
+    save_top_k: int = 100,
     save: bool = False,
 ):
     Path(result_path).mkdir(parents=True, exist_ok=True)
@@ -286,12 +289,55 @@ def run_evaluation(
 
     # Ring distribution
     print_ring_ratio([r["chem_results"]["ring_size"] for r in results], logger)
+
+    # ------------------------------------------------------------------
+    # Save top ligands by docking score (more negative == better)
+    # ------------------------------------------------------------------
+    if results:  # proceed only if there are evaluated ligands
+        # sort by Vina dock affinity (ascending, because lower = better)
+        sorted_by_affinity = sorted(
+            results, key=lambda x: x["vina"]["dock"]["affinity"]
+        )
+        top_k = sorted_by_affinity[: min(save_top_k, len(sorted_by_affinity))]
+
+        top_dir = Path(result_path) / f"top{save_top_k}"
+        top_dir.mkdir(parents=True, exist_ok=True)
+
+        combined_sdf_path = top_dir / f"top{save_top_k}_ligands.sdf"
+        sdf_writer = Chem.SDWriter(str(combined_sdf_path))
+
+        csv_path = top_dir / f"top{save_top_k}_affinity.csv"
+        with open(csv_path, "w", newline="") as f_csv:
+            csv_writer = csv.writer(f_csv)
+            csv_writer.writerow(["rank", "smiles", "affinity", "sdf_filename"])
+
+            for rank, res in enumerate(top_k, start=1):
+                affinity = res["vina"]["dock"]["affinity"]
+                smiles = res["smiles"]
+                sdf_source = Path(res["ligand_filename"])
+                sdf_dest = top_dir / sdf_source.name
+
+                # copy individual SDF
+                try:
+                    shutil.copy(sdf_source, sdf_dest)
+                except Exception as e:
+                    logger.warning(f"Failed to copy {sdf_source} -> {sdf_dest}: {e}")
+
+                # write to combined SDF with informative title
+                mol = Chem.AddHs(res["mol"], addCoords=True)
+                mol.SetProp("_Name", f"rank_{rank}_affinity_{affinity:.3f}")
+                sdf_writer.write(mol)
+
+                csv_writer.writerow([rank, smiles, affinity, sdf_dest.name])
+
+        sdf_writer.close()
+        logger.info(
+            "Saved top %d ligands (by Vina dock affinity) to %s",
+            len(top_k),
+            top_dir,
+        )
+
     return results
-
-
-# -----------------------------------------------------------------------------
-# CLI
-# -----------------------------------------------------------------------------
 
 
 def parse_args():
@@ -312,6 +358,9 @@ def parse_args():
     p.add_argument(
         "--save", action="store_true", help="Save intermediate files and plots"
     )
+    p.add_argument(
+        "--save_top_k", type=int, default=100, help="Number of top ligands to save"
+    )
     p.add_argument("--exhaustiveness", type=int, default=8, help="Vina exhaustiveness")
     return p.parse_args()
 
@@ -325,6 +374,7 @@ def main():
         box_size=args.box_size,
         result_path=args.result_path,
         exhaustiveness=args.exhaustiveness,
+        save_top_k=args.save_top_k,
         save=args.save,
     )
 
