@@ -26,6 +26,7 @@ from models.transitions import (
     index_to_log_onehot,
     log_sample_categorical,
 )
+from utils.sample import RequiresGradContext, l2_square  # for classifier guidance
 
 
 def center_pos(protein_pos, ligand_pos, batch_protein, batch_ligand, mode="protein"):
@@ -773,6 +774,11 @@ class DecompScorePosNet3D(nn.Module):
         energy_drift_opt=None,
         full_protein_pos=None,
         full_batch_protein=None,
+        # for guidance
+        context=None,
+        scale_factor=None,
+        classifier=None,
+        clip=None,
     ):
         if num_steps is None:
             num_steps = self.num_timesteps
@@ -798,30 +804,72 @@ class DecompScorePosNet3D(nn.Module):
             reversed(range(self.num_timesteps - num_steps, self.num_timesteps))
         )
         for i in tqdm(time_seq, desc="sampling", total=len(time_seq)):
+            # timestep tensor
             t = torch.full(
                 size=(num_graphs,),
                 fill_value=i,
                 dtype=torch.long,
                 device=protein_pos.device,
             )
-            preds = self(
-                protein_pos=protein_pos,
-                protein_v=protein_v,
-                batch_protein=batch_protein,
-                protein_group_idx=protein_group_idx,
-                init_ligand_pos=ligand_pos,
-                init_ligand_v=ligand_v,
-                init_ligand_v_aux=ligand_v_aux,
-                batch_ligand=batch_ligand,
-                ligand_group_idx=ligand_group_idx,
-                ligand_fc_bond_index=ligand_fc_bond_index,
-                init_ligand_fc_bond_type=ligand_bond,
-                prior_centers=prior_centers,
-                prior_stds=prior_stds,
-                batch_prior=batch_prior,
-                prior_group_idx=prior_group_idx,
-                ligand_atom_mask=ligand_atom_mask,  # if scaffold only, 1=scaffold, 0=arms
-                time_step=t,
+
+            # ---------------- Guidance (optional) ----------------
+            clip_guidance = 0.0  # default no guidance
+            with torch.enable_grad():
+                with RequiresGradContext(ligand_pos, requires_grad=True):
+                    preds = self(
+                        protein_pos=protein_pos,
+                        protein_v=protein_v,
+                        batch_protein=batch_protein,
+                        protein_group_idx=protein_group_idx,
+                        init_ligand_pos=ligand_pos,
+                        init_ligand_v=ligand_v,
+                        init_ligand_v_aux=ligand_v_aux,
+                        batch_ligand=batch_ligand,
+                        ligand_group_idx=ligand_group_idx,
+                        ligand_fc_bond_index=ligand_fc_bond_index,
+                        init_ligand_fc_bond_type=ligand_bond,
+                        prior_centers=prior_centers,
+                        prior_stds=prior_stds,
+                        batch_prior=batch_prior,
+                        prior_group_idx=prior_group_idx,
+                        ligand_atom_mask=ligand_atom_mask,
+                        time_step=t,
+                    )
+
+                    # estimate x0
+                    if self.model_mean_type == "noise":
+                        pos0_from_e_tmp = self._predict_x0_from_eps(
+                            xt=ligand_pos,
+                            eps=preds["pred_ligand_pos"] - ligand_pos,
+                            t=t,
+                            batch=batch_ligand,
+                        )
+                    elif self.model_mean_type == "C0":
+                        pos0_from_e_tmp = preds["pred_ligand_pos"]
+                    else:
+                        raise ValueError
+
+                    protein_pos_unnorm = protein_pos + offset[batch_protein]
+                    ligand_pos_unnorm = pos0_from_e_tmp + offset[batch_ligand]
+
+                    prediction = classifier(
+                        protein_pos=protein_pos_unnorm,
+                        protein_v=protein_v,
+                        batch_protein=batch_protein,
+                        ligand_pos=ligand_pos_unnorm,
+                        ligand_v=preds["pred_ligand_v"],
+                        batch_ligand=batch_ligand,
+                    )
+
+                    energy = l2_square(prediction, context)
+                    grad_pos = torch.autograd.grad(
+                        energy.sum(), ligand_pos, retain_graph=False
+                    )[0]
+
+            beta_t = self.betas[i].to(ligand_pos.device)
+            prefactor = beta_t / torch.sqrt(1.0 - beta_t)
+            clip_guidance = torch.clamp(
+                scale_factor * prefactor * grad_pos, min=-clip, max=clip
             )
 
             # Compute posterior mean and variance
@@ -933,6 +981,7 @@ class DecompScorePosNet3D(nn.Module):
                 * (0.5 * pos_log_variance).exp()
                 * torch.randn_like(ligand_pos)
                 * batch_prior_stds
+                - clip_guidance
             )
             if ligand_atom_mask is not None:
                 ligand_pos_next[ligand_atom_mask == 0] = ligand_pos[

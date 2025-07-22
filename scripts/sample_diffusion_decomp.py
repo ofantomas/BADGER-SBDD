@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 import torch
-from rdkit import Chem, RDLogger
+from rdkit import RDLogger
 from torch_geometric.data import Batch
 from torch_geometric.transforms import Compose
 from torch_scatter import scatter_sum
@@ -19,12 +19,10 @@ import wandb
 
 import sys
 
-# print(os.getcwd())
 sys.path.append(os.getcwd())
 
 import utils.misc as misc
 import utils.prior as utils_prior
-import utils.reconstruct as recon
 import utils.transforms as trans
 from datasets.pl_data import FOLLOW_BATCH, torchify_dict
 from datasets.pl_pair_dataset import get_decomp_dataset
@@ -55,6 +53,7 @@ def pocket_pdb_to_pocket(pdb_path):
                 ],
                 dtype=torch.long,
             ),
+            "hybridization": [],  # add empty hybridization list so transforms won't break
         },
     )
     return data
@@ -76,6 +75,7 @@ def unbatch_v_traj(ligand_v_traj, n_data, ligand_cum_atoms):
 def sample_diffusion_ligand_decomp(
     model,
     data,
+    full_protein_pos,
     init_transform,
     num_samples,
     batch_size=16,
@@ -111,7 +111,6 @@ def sample_diffusion_ligand_decomp(
         with open(natoms_config, "rb") as f:
             natoms_config = pickle.load(f)
         natoms_sampler = utils_prior.NumAtomsSampler(natoms_config)
-
     for i in tqdm(range(num_batch)):
         n_data = (
             batch_size
@@ -419,7 +418,6 @@ def sample_diffusion_ligand_decomp(
         else:
             raise ValueError(prior_mode)
 
-        logger.info(f"ligand_num_atoms={ligand_num_atoms}")
         init_ligand_pos = torch.cat(batch_init_pos, dim=0).to(device)
         batch_ligand = torch.repeat_interleave(
             torch.arange(n_data), torch.tensor(ligand_num_atoms)
@@ -487,7 +485,6 @@ def sample_diffusion_ligand_decomp(
             scale_factor=scale_factor,
             classifier=classifier,
             clip=clip,
-            enable_wandb=enable_wandb,
         )
         ligand_pos, ligand_v, ligand_bond = r["pos"], r["v"], r["bond"]
         ligand_pos_traj, ligand_v_traj = r["pos_traj"], r["v_traj"]
@@ -561,7 +558,6 @@ def sample_diffusion_ligand_decomp(
         time_list.append(t2 - t1)
         current_i += n_data
 
-    n_recon_success, n_complete = 0, 0
     results = []
     for i, (
         pred_pos,
@@ -570,8 +566,6 @@ def sample_diffusion_ligand_decomp(
         pred_v_traj,
         pred_bond_index,
         pred_bond_type,
-        pred_b_traj,
-        pred_bt_traj,
     ) in enumerate(
         zip(
             all_pred_pos,
@@ -580,39 +574,16 @@ def sample_diffusion_ligand_decomp(
             all_pred_v_traj,
             all_pred_bond_index,
             all_pred_bond,
-            all_pred_b_traj,
-            all_pred_bt_traj,
         )
     ):
         pred_atom_type = trans.get_atomic_number_from_index(pred_v, mode=atom_enc_mode)
         pred_bond_index = pred_bond_index.tolist()
         # reconstruction
-        try:
-            pred_aromatic = trans.is_aromatic_from_index(pred_v, mode=atom_enc_mode)
-            if args.recon_with_bond:
-                mol = recon.reconstruct_from_generated_with_bond(
-                    pred_pos, pred_atom_type, pred_bond_index, pred_bond_type
-                )
-            else:
-                mol = recon.reconstruct_from_generated(
-                    pred_pos, pred_atom_type, pred_aromatic
-                )
-            smiles = Chem.MolToSmiles(mol)
-            n_recon_success += 1
-
-        except recon.MolReconsError:
-            logger.warning("Reconstruct failed %s" % f"{i}")
-            mol = None
-            smiles = ""
-
-        if mol is not None and "." not in smiles:
-            n_complete += 1
         results.append(
             {
-                "mol": mol,
-                "smiles": smiles,
                 "pred_pos": pred_pos,
                 "pred_v": pred_v,
+                "pred_atom_type": pred_atom_type,
                 "pred_pos_traj": pred_pos_traj,
                 "pred_v_traj": pred_v_traj,
                 "decomp_mask": all_decomp_ind[i],
@@ -620,7 +591,6 @@ def sample_diffusion_ligand_decomp(
                 "pred_bond_type": pred_bond_type,
             }
         )
-    logger.info(f"n_reconstruct: {n_recon_success} n_complete: {n_complete}")
     return results
 
 
@@ -673,7 +643,6 @@ if __name__ == "__main__":
     ]
     misc.seed_all(config.sample.seed)
 
-    # print(f"here{config_name}")
     log_dir = args.outdir
     os.makedirs(log_dir, exist_ok=True)
     logger = misc.get_logger("evaluate", log_dir)
@@ -843,6 +812,7 @@ if __name__ == "__main__":
         raw_results = sample_diffusion_ligand_decomp(
             model,
             data,
+            full_protein_pos,
             init_transform=init_transform,
             num_samples=config.sample.num_samples,
             batch_size=args.batch_size,

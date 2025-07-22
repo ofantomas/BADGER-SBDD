@@ -262,14 +262,8 @@ class Classifier(nn.Module):
             batch_ligand,
             mode=self.center_pos_mode,
         )
-
-        ###
-        init_ligand_v = F.one_hot(ligand_v, self.num_classes).float()
-
-        input_ligand_feat = init_ligand_v
-
         h_protein = self.protein_atom_emb(protein_v)
-        init_ligand_h = self.ligand_atom_emb(input_ligand_feat)
+        init_ligand_h = self.ligand_atom_emb(ligand_v)
 
         if self.config.node_indicator:
             pro_ind = (
